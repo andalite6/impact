@@ -32,21 +32,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ImpactGuard")
 
-# Set page configuration with custom theme
-st.set_page_config(
-    page_title="ImpactGuard - AI Security & Sustainability Hub",
-    page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# Set page configuration with custom theme - this must be the first Streamlit command!
+try:
+    st.set_page_config(
+        page_title="ImpactGuard - AI Security & Sustainability Hub",
+        page_icon="🛡️",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+except Exception as e:
+    st.error(f"Error setting page config: {e}")
+    st.stop()
 
 # Setup OpenAI API key securely (for reporting functionality)
 try:
     openai.api_key = st.secrets["OPENAI_API_KEY"]
+    logger.info("OpenAI API key loaded from secrets")
 except Exception as e:
-    # Direct API key assignment (for development only)
-    openai.api_key = "xxxxxx"  # Replace with actual key in production
-    logger.info("Using directly assigned API key for development.")
+    # For development, allow user to input their API key
+    st.session_state.openai_api_missing = True
+    logger.warning("OpenAI API key not found in secrets. Will prompt user for key.")
 
 # ----------------------------------------------------------------
 # Session State Management
@@ -84,6 +89,17 @@ def initialize_session_state():
         # Error handling
         if 'error_message' not in st.session_state:
             st.session_state.error_message = None
+            
+        # API key management
+        if 'openai_api_missing' not in st.session_state:
+            st.session_state.openai_api_missing = False
+            
+        if 'user_provided_api_key' not in st.session_state:
+            st.session_state.user_provided_api_key = ""
+            
+        # Target selection state
+        if 'selected_target' not in st.session_state:
+            st.session_state.selected_target = None
             
         # Initialize bias testing state
         if 'bias_results' not in st.session_state:
@@ -885,3 +901,269 @@ def generate_insight(user, category, prompt, response, knowledge_base, context, 
     except Exception as e:
         logger.error(f"Error generating insight: {str(e)}")
         return f"Error generating insight: {str(e)}"
+
+# ----------------------------------------------------------------
+# Main Application
+# ----------------------------------------------------------------
+
+if __name__ == "__main__":
+    try:
+        # Initialize session state
+        initialize_session_state()
+        
+        # Clean up any completed threads
+        cleanup_threads()
+        
+        # Apply CSS
+        st.markdown(load_css(), unsafe_allow_html=True)
+        
+        # Render header
+        render_header()
+        
+        # Display sidebar navigation
+        sidebar_navigation()
+        
+        # Check for OpenAI API key if missing
+        if st.session_state.openai_api_missing and st.session_state.user_provided_api_key == "":
+            st.warning("OpenAI API key not found in application secrets. Some features will be limited.")
+            with st.expander("Enter your API key to enable all features"):
+                api_key = st.text_input("OpenAI API Key", type="password", 
+                                        help="Your key will only be stored in this session and not saved.")
+                if st.button("Save API Key"):
+                    if api_key and api_key.startswith("sk-"):
+                        openai.api_key = api_key
+                        st.session_state.user_provided_api_key = api_key
+                        st.success("API key saved for this session!")
+                        st.rerun()
+                    else:
+                        st.error("Invalid API key format. Should start with 'sk-'")
+        
+        # Display any error messages
+        if st.session_state.error_message:
+            st.error(st.session_state.error_message)
+            st.session_state.error_message = None  # Clear after displaying
+            
+        # Simple placeholder content for the dashboard
+        if st.session_state.current_page == "Dashboard":
+            st.title("🏠 Dashboard")
+            st.subheader("Welcome to ImpactGuard")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.markdown(metric_card("Targets", len(st.session_state.targets)), unsafe_allow_html=True)
+            with col2:
+                st.markdown(metric_card("Tests Run", len(st.session_state.test_results)), unsafe_allow_html=True)
+            with col3:
+                st.markdown(metric_card("Vulnerabilities", st.session_state.vulnerabilities_found), unsafe_allow_html=True)
+                
+            st.markdown(modern_card("Getting Started", 
+                        """
+                        1. Add a target system in Target Management
+                        2. Configure tests in Test Configuration
+                        3. Run an assessment against your target
+                        4. View results and generate reports
+                        """, 
+                        card_type="primary", 
+                        icon="🚀"), 
+                       unsafe_allow_html=True)
+            
+            # Show quick setup if no targets
+            if not st.session_state.targets:
+                st.write("---")
+                st.subheader("Quick Setup")
+                with st.form("quick_setup"):
+                    target_name = st.text_input("Add your first target name")
+                    target_url = st.text_input("Target URL or Endpoint")
+                    if st.form_submit_button("Create Target"):
+                        if target_name and target_url:
+                            new_target = {
+                                "id": f"target_1",
+                                "name": target_name,
+                                "url": target_url,
+                                "type": "LLM",
+                                "added": datetime.now().isoformat()
+                            }
+                            st.session_state.targets.append(new_target)
+                            st.success(f"Added new target: {target_name}")
+                            st.session_state.current_page = "Run Assessment"
+                            st.rerun()
+                       
+        elif st.session_state.current_page == "Target Management":
+            st.title("🎯 Target Management")
+            st.write("Add and manage your target systems here.")
+            
+            # Add a simple form to add new targets
+            with st.form("add_target_form"):
+                target_name = st.text_input("Target Name")
+                target_url = st.text_input("Target URL/Endpoint")
+                target_type = st.selectbox("Target Type", ["API", "Web Application", "LLM", "ML Model"])
+                submit = st.form_submit_button("Add Target")
+                
+                if submit and target_name and target_url:
+                    new_target = {
+                        "id": f"target_{len(st.session_state.targets) + 1}",
+                        "name": target_name,
+                        "url": target_url,
+                        "type": target_type,
+                        "added": datetime.now().isoformat()
+                    }
+                    st.session_state.targets.append(new_target)
+                    st.success(f"Added new target: {target_name}")
+            
+            # Display existing targets
+            if st.session_state.targets:
+                st.subheader("Your Targets")
+                cols = st.columns(2)
+                for i, target in enumerate(st.session_state.targets):
+                    with cols[i % 2]:
+                        st.markdown(
+                            f"""
+                            <div class="target-card">
+                                <strong>{target['name']}</strong> ({target['type']})<br>
+                                URL: {target['url']}<br>
+                                Added: {target['added'].split('T')[0]}
+                            </div>
+                            """, 
+                            unsafe_allow_html=True
+                        )
+                        col1, col2 = st.columns([1, 1])
+                        with col1:
+                            if st.button("Test", key=f"test_{target['id']}"):
+                                st.session_state.current_page = "Run Assessment"
+                                st.session_state.selected_target = target['id']
+                                st.rerun()
+                        with col2:
+                            if st.button("Delete", key=f"del_{target['id']}"):
+                                st.session_state.targets.remove(target)
+                                st.success(f"Deleted {target['name']}")
+                                st.rerun()
+            else:
+                st.info("No targets added yet. Add your first target above.")
+        
+        elif st.session_state.current_page == "Run Assessment":
+            st.title("▶️ Run Assessment")
+            
+            if not st.session_state.targets:
+                st.warning("No targets available. Please add a target in Target Management first.")
+                if st.button("Go to Target Management"):
+                    st.session_state.current_page = "Target Management"
+                    st.rerun()
+            else:
+                # Target selection
+                targets_dict = {t["id"]: t["name"] for t in st.session_state.targets}
+                selected_id = st.selectbox("Select Target", 
+                                          options=list(targets_dict.keys()),
+                                          format_func=lambda x: targets_dict[x],
+                                          index=0)
+                
+                # Find the selected target
+                selected_target = next((t for t in st.session_state.targets if t["id"] == selected_id), None)
+                
+                if selected_target:
+                    st.write(f"Running assessment against: **{selected_target['name']}** ({selected_target['type']})")
+                    
+                    # Test configuration
+                    st.subheader("Test Configuration")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        test_types = [
+                            "OWASP Top 10 for LLMs",
+                            "NIST AI Risk Management",
+                            "Fairness Assessment",
+                            "Data Privacy Compliance",
+                            "Jailbreak Resistance"
+                        ]
+                        selected_tests = []
+                        for test in test_types:
+                            if st.checkbox(test, value=True):
+                                selected_tests.append(test)
+                    
+                    with col2:
+                        test_depth = st.slider("Test Depth", min_value=1, max_value=5, value=3,
+                                              help="Higher values perform more thorough testing but take longer")
+                        carbon_track = st.checkbox("Track Carbon Impact", value=True)
+                    
+                    # Get test vectors based on selection
+                    test_vectors = get_mock_test_vectors()
+                    
+                    # Run button
+                    if st.button("Start Assessment", type="primary"):
+                        if not selected_tests:
+                            st.error("Please select at least one test type.")
+                        else:
+                            with st.spinner("Running tests..."):
+                                # Create a progress bar
+                                progress_bar = st.progress(0)
+                                
+                                # Start test in a thread so UI remains responsive
+                                def run_test_thread():
+                                    try:
+                                        st.session_state.running_test = True
+                                        run_mock_test(selected_target, test_vectors, duration=5)  # shortened for demo
+                                        st.session_state.running_test = False
+                                    except Exception as e:
+                                        logger.error(f"Test thread error: {e}")
+                                        st.session_state.error_message = f"Test failed: {str(e)}"
+                                        st.session_state.running_test = False
+                                
+                                # Create and start thread
+                                test_thread = threading.Thread(target=run_test_thread)
+                                test_thread.start()
+                                st.session_state.active_threads.append(test_thread)
+                                
+                                # Monitor progress
+                                while st.session_state.running_test:
+                                    # Update progress bar
+                                    progress_bar.progress(st.session_state.progress)
+                                    
+                                    # Display live stats
+                                    stats_cols = st.columns(3)
+                                    with stats_cols[0]:
+                                        st.metric("Progress", f"{int(st.session_state.progress * 100)}%")
+                                    with stats_cols[1]:
+                                        st.metric("Vulnerabilities", st.session_state.vulnerabilities_found)
+                                    with stats_cols[2]:
+                                        if carbon_track:
+                                            st.metric("Carbon Impact", "Measuring...")
+                                    
+                                    # Brief pause to prevent UI lag
+                                    time.sleep(0.1)
+                                
+                                # Show completion
+                                progress_bar.progress(1.0)
+                                st.success(f"Assessment completed for {selected_target['name']}")
+                                
+                                # Navigate to results
+                                st.session_state.current_page = "Results Analyzer"
+                                st.rerun()
+                
+                    # Stop button (only show if test is running)
+                    if st.session_state.running_test:
+                        if st.button("Stop Test", type="secondary"):
+                            st.session_state.running_test = False
+                            st.warning("Test was stopped before completion.")
+                
+                # Display sample results if available
+                if st.session_state.test_results and "vulnerabilities" in st.session_state.test_results:
+                    st.subheader("Recent Results")
+                    for vuln in st.session_state.test_results["vulnerabilities"][:3]:
+                        severity_color = get_severity_color(vuln["severity"])
+                        st.markdown(f"""
+                        <div style="padding: 10px; border-left: 4px solid {severity_color}; background-color: rgba(0,0,0,0.05); margin-bottom: 10px;">
+                            <div style="font-weight: bold;">{vuln["id"]}: {vuln["test_name"]}</div>
+                            <div>{vuln["details"]}</div>
+                            <div style="font-size: 0.8em; opacity: 0.7;">Severity: {vuln["severity"].upper()}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+        
+        # Add simple content for other pages
+        else:
+            st.title(f"{st.session_state.current_page}")
+            st.info(f"This is the {st.session_state.current_page} page. Content is under development.")
+            
+    except Exception as e:
+        error_msg = f"Application error: {str(e)}"
+        logger.error(error_msg)
+        logger.debug(traceback.format_exc())
+        st.error(error_msg)
+        st.code(traceback.format_exc())
