@@ -44,7 +44,9 @@ st.set_page_config(
 try:
     openai.api_key = st.secrets["OPENAI_API_KEY"]
 except Exception as e:
-    logger.warning("OpenAI API key not found in secrets. Some features may be limited.")
+    # Direct API key assignment (for development only)
+    openai.api_key = "xxxxxx"  # Replace with actual key in production
+    logger.info("Using directly assigned API key for development.")
 
 # ----------------------------------------------------------------
 # Session State Management
